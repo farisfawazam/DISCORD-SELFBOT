@@ -1,0 +1,10 @@
+[
+  {
+    "name": "Akun Contoh",
+    "token": "PASTE_TOKEN_DISINI",
+    "guild_id": "SERVER_ID",
+    "channel_id": "VOICE_CHANNEL_ID",
+    "self_mute": true,
+    "self_deaf": true
+  }
+]
