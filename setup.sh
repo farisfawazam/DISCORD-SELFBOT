@@ -1,51 +1,65 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ========================================================
-# Setup 1x Discord Voice Stay (Auto-Install Prebuilt Davey for Termux Python 3.14)
+# Setup 1x Discord Voice Stay (Self-Healing Pip & Auto-Extract)
 # ========================================================
 set -e
 
 echo "=========================================="
-echo "  [1/3] Menyiapkan Python & Pip Termux..."
+echo "  [1/4] Memeriksa & Memperbaiki Pip Termux..."
 echo "=========================================="
-pkg update -y
-pkg install -y python python-pip git clang make libffi
-
-# Sinkronkan pip dengan versi Python saat ini
-python -m ensurepip --upgrade 2>/dev/null || true
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install flask python-dotenv discord.py-self==2.1.0
+# Jika pip rusak (akibat transisi python 3.13 ke 3.14), bersihkan dan pasang ulang otomatis
+if ! python3 -m pip --version >/dev/null 2>&1; then
+    echo "[!] Mendeteksi pip corrupt. Memperbaiki secara otomatis..."
+    rm -rf /data/data/com.termux/files/usr/lib/python*/site-packages/pip* 2>/dev/null || true
+    rm -rf /data/data/com.termux/files/usr/lib/python*/site-packages/setuptools* 2>/dev/null || true
+    rm -rf /data/data/com.termux/files/usr/lib/python*/site-packages/wheel* 2>/dev/null || true
+    pkg update -y
+    pkg install --reinstall -y python python-pip
+fi
 
 echo "=========================================="
-echo "  [2/3] Memasang Pre-built Binary Davey (Tanpa Compile Rust)..."
+echo "  [2/4] Menginstall Package Dasar..."
 echo "=========================================="
+pkg install -y git clang make libffi
 
-SITE_DIR=$(python -c "import site; print(site.getsitepackages()[0])")
-echo "Lokasi site-packages: $SITE_DIR"
+echo "=========================================="
+echo "  [3/4] Menginstall Library Python..."
+echo "=========================================="
+python3 -m pip install flask python-dotenv discord.py-self==2.1.0
 
-# Download wheel biner Python 3.14 aarch64 langsung dari PyPI
-WHEEL_URL="https://files.pythonhosted.org/packages/21/de/91f95b4b673163fe691f21cdc3b50577fb8bda687e5f7b53ab237f94a860/davey-0.1.6-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+echo "=========================================="
+echo "  [4/4] Memasang Pre-built Binary Davey (DAVE Protocol)..."
+echo "=========================================="
+SITE_DIR=$(python3 -c "import site; print(site.getsitepackages()[0])")
 
-python -c "
+python3 -c "
 import urllib.request, zipfile, io, sys
 
-url = '$WHEEL_URL'
-site_dir = '$SITE_DIR'
-print('Mengunduh prebuilt davey binary untuk Python 3.14 ARM64...')
-data = urllib.request.urlopen(url).read()
-print(f'Mengekstrak binary ({len(data)} bytes) ke ' + site_dir + '...')
-z = zipfile.ZipFile(io.BytesIO(data))
-z.extractall(site_dir)
-print('[OK] Binary davey berhasil diekstrak!')
+# Mendeteksi versi minor python di Termux (misal 3.14 -> 314, 3.13 -> 313)
+v = f'{sys.version_info.major}{sys.version_info.minor}'
+urls = {
+    '314': 'https://files.pythonhosted.org/packages/21/de/91f95b4b673163fe691f21cdc3b50577fb8bda687e5f7b53ab237f94a860/davey-0.1.6-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl',
+    '313': 'https://files.pythonhosted.org/packages/c0/50/fd017a3f89252597e0c85a4552fe732add13c167f07059886f8f9add218b/davey-0.1.6-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl',
+    '312': 'https://files.pythonhosted.org/packages/72/c0/51b69f42e2b1a873ed279af0f581eab91744919dc41c006eb20ce603e567/davey-0.1.6-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl'
+}
+
+url = urls.get(v, urls['314'])
+print(f'Mengunduh prebuilt davey binary untuk Python {v} aarch64...')
+try:
+    data = urllib.request.urlopen(url).read()
+    print(f'Mengekstrak {len(data)} bytes ke $SITE_DIR...')
+    z = zipfile.ZipFile(io.BytesIO(data))
+    z.extractall('$SITE_DIR')
+    print('[OK] Binary davey berhasil terpasang!')
+except Exception as e:
+    print('[WARN] Gagal auto-extract:', e)
 "
 
-echo "=========================================="
-echo "  [3/3] Memverifikasi Instalasi Davey..."
-echo "=========================================="
-python -c "import davey; print('  [SUKSES] Davey Protocol Version:', davey.DAVE_PROTOCOL_VERSION)"
+python3 -c "import davey; print('  [SUKSES] Davey Protocol Version:', davey.DAVE_PROTOCOL_VERSION)" 2>/dev/null || echo "[!] Lanjut menjalankan bot..."
 
 echo ""
 echo "=========================================="
-echo "  SETUP 1X SELESAI & BERHASIL 100%!"
-echo "  Sekarang kamu tinggal ketik:"
+echo "  SETUP SELESAI!"
+echo "  Tinggal ketik:"
 echo "  python run.py"
 echo "=========================================="
