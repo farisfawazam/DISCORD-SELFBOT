@@ -53,9 +53,17 @@ if sys.platform == "win32":
 from flask import Flask, jsonify, request, render_template_string
 import discord
 import discord.voice_client as vc
+import discord.voice_state as vs
 from discord.ext import commands
 
 vc.has_nacl = True
+
+# Cek ketersediaan protocol DAVE
+try:
+    import davey
+    has_dave = True
+except Exception:
+    has_dave = False
 
 logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -162,9 +170,12 @@ class BotClient(commands.Bot):
             except Exception:
                 pass
 
+        if not has_dave:
+            push_log(self.account_name, "PERINGATAN: Library 'davey' belum terpasang di HP! Discord memerlukan DAVE (close code 4017). Di Termux jalankan: pip install davey")
+
         try:
-            # Connect langsung dengan mute & deafen native (sekali handshake, tidak loop)
-            vc_client = await channel.connect(self_mute=self.self_mute, self_deaf=self.self_deaf, timeout=12.0)
+            # Connect langsung dengan mute & deafen native
+            vc_client = await channel.connect(self_mute=self.self_mute, self_deaf=self.self_deaf, timeout=20.0)
             await asyncio.sleep(1.0)
 
             if vc_client.is_connected() and vc_client.channel and (vc_client.channel.id == channel.id):
@@ -179,8 +190,13 @@ class BotClient(commands.Bot):
                 status_map[self.account_name] = {"status": "ONLINE", "detail": "Gagal join"}
                 return False
         except Exception as e:
-            push_log(self.account_name, f"Gagal masuk voice: {e}")
-            status_map[self.account_name] = {"status": "ONLINE", "detail": "Join error"}
+            err_msg = str(e)
+            if "4017" in err_msg or "DAVE" in err_msg:
+                push_log(self.account_name, "ERROR DAVE (4017): Discord menolak koneksi karena library davey belum terpasang di HP. Jalankan: pip install davey")
+                status_map[self.account_name] = {"status": "ERROR", "detail": "Butuh library davey"}
+            else:
+                push_log(self.account_name, f"Gagal masuk voice: {err_msg}")
+                status_map[self.account_name] = {"status": "ONLINE", "detail": f"Error: {err_msg[:20]}"}
             return False
 
     async def action_leave_voice(self):
