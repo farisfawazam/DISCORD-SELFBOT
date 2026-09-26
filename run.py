@@ -91,6 +91,10 @@ class BotRunner:
         @self.bot.event
         async def on_ready():
             nonlocal rc
+            if not self.running:
+                await self.bot.close()
+                return
+
             push_log(self.name, f"Login as {self.bot.user}")
             status_map[self.name] = {"status": "ONLINE", "detail": str(self.bot.user)}
             g = self.bot.get_guild(guild_id)
@@ -121,8 +125,13 @@ class BotRunner:
         @self.bot.event
         async def on_voice_state_update(member, before, after):
             nonlocal rc
-            if member.id != self.bot.user.id or not (before.channel and not after.channel) or not self.running:
+            # Jika bot sengaja dimatikan, jangan reconnect sama sekali
+            if not self.running:
                 return
+
+            if member.id != self.bot.user.id or not (before.channel and not after.channel):
+                return
+
             rc += 1
             if rc > 10:
                 push_log(self.name, "Max reconnect reached. Stopped.")
@@ -134,6 +143,9 @@ class BotRunner:
             push_log(self.name, f"DC. Reconnecting in {delay}s...")
             status_map[self.name] = {"status": "RECONNECTING", "detail": f"{delay}s"}
             await asyncio.sleep(delay)
+
+            if not self.running:
+                return
 
             g = self.bot.get_guild(guild_id)
             ch = g.get_channel(channel_id) if g else None
@@ -164,15 +176,26 @@ class BotRunner:
         if not self.running:
             return
         self.running = False
-        push_log(self.name, "Stopping...")
+        push_log(self.name, "Stopping and disconnecting...")
+        status_map[self.name] = {"status": "OFFLINE", "detail": ""}
+
         if self.bot and self.loop and self.loop.is_running():
             async def _close():
-                for vc in self.bot.voice_clients:
+                # 1. Keluar dari voice channel secara resmi
+                for vc in list(self.bot.voice_clients):
                     try:
                         await vc.disconnect(force=True)
                     except Exception:
                         pass
+                # 2. Update status gateway voice state ke None
+                try:
+                    for guild in list(self.bot.guilds):
+                        await guild.change_voice_state(channel=None)
+                except Exception:
+                    pass
+                # 3. Putus session bot Discord total
                 await self.bot.close()
+
             asyncio.run_coroutine_threadsafe(_close(), self.loop)
 
 

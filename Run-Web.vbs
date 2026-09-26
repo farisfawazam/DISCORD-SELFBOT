@@ -2,9 +2,13 @@ Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 strPath = fso.GetParentFolderName(WScript.ScriptFullName)
 
-' Jalankan server web via pythonw (tanpa console window)
-WshShell.Run """C:\Program Files\Python310\pythonw.exe"" """ & strPath & "\web\server.py""", 0, False
+' Bersihkan proses lama agar tidak bentrok
+WshShell.Run "taskkill /f /im pythonw.exe", 0, True
+WScript.Sleep 500
 
-' Tunggu 2 detik lalu buka browser
-WScript.Sleep 2000
+' Jalankan server baru
+WshShell.Run """C:\Program Files\Python310\pythonw.exe"" """ & strPath & "\run.py""", 0, False
+
+' Buka browser
+WScript.Sleep 1500
 WshShell.Run "http://localhost:5050"

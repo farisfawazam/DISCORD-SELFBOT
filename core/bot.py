@@ -161,14 +161,21 @@ class BotRunner:
         if not self.running:
             return
         self.running = False
-        self.log("Stopping bot...")
+        self.log("Stopping bot and clearing voice state...")
+        self.set_status("OFFLINE", "")
 
         if self.bot and self.loop and self.loop.is_running():
             async def _close():
-                for vc in self.bot.voice_clients:
+                for vc in list(self.bot.voice_clients):
                     try:
                         await vc.disconnect(force=True)
                     except Exception:
                         pass
+                try:
+                    for guild in list(self.bot.guilds):
+                        await guild.change_voice_state(channel=None)
+                except Exception:
+                    pass
                 await self.bot.close()
+
             asyncio.run_coroutine_threadsafe(_close(), self.loop)
