@@ -1,6 +1,33 @@
 import sys
 import os
 import site
+import subprocess
+
+# Auto-check & auto-install requirements di awal
+REQUIRED_PACKAGES = {
+    "discord": "discord.py-self>=2.1.0",
+    "davey": "davey>=0.1.6",
+    "flask": "flask>=2.0.0",
+}
+
+missing = []
+for module_name, pip_name in REQUIRED_PACKAGES.items():
+    try:
+        __import__(module_name)
+    except ImportError:
+        missing.append(pip_name)
+
+if missing:
+    print("=" * 50)
+    print(f"  [Auto-Setup] Menginstall dependency: {', '.join(missing)}")
+    print("  Mohon tunggu sebentar...")
+    print("=" * 50)
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing)
+        print("[Auto-Setup] Instalasi selesai! Melanjutkan...")
+    except Exception as e:
+        print(f"[Auto-Setup] Peringatan: Gagal auto-install ({e}). Mencoba lanjut...")
+
 import time
 import json
 import threading
