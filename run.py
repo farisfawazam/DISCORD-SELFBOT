@@ -103,7 +103,6 @@ class BotRunner:
         self.acc = acc
         self.name = acc["name"]
         self.bot = None
-        self.loop = None
         self.running = False
         self.in_voice = False
         self.reconnecting = False
@@ -115,8 +114,6 @@ class BotRunner:
         threading.Thread(target=self._run, daemon=True).start()
 
     def _run(self):
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
         self.bot = commands.Bot(
             command_prefix="!",
             self_bot=True,
