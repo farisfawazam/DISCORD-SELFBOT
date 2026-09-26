@@ -1,23 +1,21 @@
 import sys
 import os
 import site
+import time
 import json
 import threading
 import asyncio
 import logging
 from datetime import datetime
 import webbrowser
+import types
 
 # Pastikan path user site-packages selalu terbaca
 user_site = site.getusersitepackages()
 if os.path.exists(user_site) and user_site not in sys.path:
     sys.path.insert(0, user_site)
 
-import types
-
-# Universal PyNaCl Mock (Solusi mutlak untuk Termux/Android & PC)
-# Jika PyNaCl tidak terpasang atau gagal compile C-library, mock ini akan mengelabui
-# discord.py-self sehingga bot tetap bisa connect & stay di voice tanpa crash.
+# Universal PyNaCl Mock
 try:
     import nacl.secret
     import nacl.utils
@@ -57,7 +55,6 @@ import discord
 import discord.voice_client as vc
 from discord.ext import commands
 
-# Force set has_nacl agar 100% lolos verifikasi
 vc.has_nacl = True
 
 logging.getLogger("discord").setLevel(logging.WARNING)
@@ -83,11 +80,12 @@ def save_accounts(accs):
 
 
 # ============================================
-#  State & Bot Runner
+#  Global Shared State & Asyncio Loop (Arsitektur Neura-Self)
 # ============================================
 log_buffer = []
 status_map = {}
-active_runners = {}
+bots = {}  # name -> BotClient instance
+main_loop = None  # Central asyncio event loop
 
 
 def push_log(name, msg):
@@ -98,23 +96,20 @@ def push_log(name, msg):
         log_buffer.pop(0)
 
 
-class BotRunner:
+class BotClient(commands.Bot):
     def __init__(self, acc):
         self.acc = acc
-        self.name = acc["name"]
-        self.bot = None
-        self.running = False
+        self.account_name = acc["name"]
+        self.token = acc["token"]
+        self.guild_id = int(acc["guild_id"])
+        self.channel_id = int(acc["channel_id"])
+        self.self_mute = acc.get("self_mute", True)
+        self.self_deaf = acc.get("self_deaf", True)
         self.in_voice = False
-        self.reconnecting = False
+        self.is_reconnecting = False
+        self.is_active = True
 
-    def start(self):
-        if self.running:
-            return
-        self.running = True
-        threading.Thread(target=self._run, daemon=True).start()
-
-    def _run(self):
-        self.bot = commands.Bot(
+        super().__init__(
             command_prefix="!",
             self_bot=True,
             chunk_guilds_at_startup=False,
@@ -122,143 +117,99 @@ class BotRunner:
             max_messages=None,
             sync_presence=False,
         )
-        token = self.acc["token"]
 
-        @self.bot.event
-        async def on_ready():
-            if not self.running:
-                await self.bot.close()
-                return
-            push_log(self.name, f"Login sukses sebagai {self.bot.user}")
-            status_map[self.name] = {"status": "ONLINE", "detail": "Siap join voice"}
+    async def on_ready(self):
+        push_log(self.account_name, f"Login sukses sebagai {self.user}")
+        status_map[self.account_name] = {"status": "ONLINE", "detail": "Siap join voice"}
 
-        @self.bot.event
-        async def on_voice_state_update(member, before, after):
-            # Hanya reconnect jika user memang sengaja dalam state in_voice
-            if not self.running or not self.in_voice or self.reconnecting:
-                return
+    async def on_voice_state_update(self, member, before, after):
+        # Hanya reconnect jika user memang sengaja dalam state in_voice dan bot masih aktif
+        if not self.is_active or not self.in_voice or self.is_reconnecting:
+            return
 
-            if member.id != self.bot.user.id or not (before.channel and not after.channel):
-                return
+        if member.id != self.user.id or not (before.channel and not after.channel):
+            return
 
-            self.reconnecting = True
-            push_log(self.name, "Terputus dari voice channel. Mencoba reconnect dalam 5 detik...")
-            status_map[self.name] = {"status": "RECONNECTING", "detail": "Waiting 5s"}
-            await asyncio.sleep(5)
+        self.is_reconnecting = True
+        push_log(self.account_name, "Koneksi voice drop. Reconnecting dalam 5s...")
+        status_map[self.account_name] = {"status": "RECONNECTING", "detail": "Waiting 5s"}
+        await asyncio.sleep(5)
 
-            if self.running and self.in_voice:
-                await self._join_voice_coro()
-            self.reconnecting = False
+        if self.is_active and self.in_voice:
+            await self.action_join_voice()
+        self.is_reconnecting = False
 
-        try:
-            status_map[self.name] = {"status": "CONNECTING", "detail": "Login ke Discord..."}
-            push_log(self.name, "Menghubungkan ke gateway Discord...")
-            self.bot.run(token, log_handler=None)
-        except Exception as e:
-            push_log(self.name, f"Login gagal: {e}")
-            status_map[self.name] = {"status": "ERROR", "detail": str(e)[:25]}
-        finally:
-            self.running = False
-            self.in_voice = False
-            status_map[self.name] = {"status": "OFFLINE", "detail": ""}
-            push_log(self.name, "Offline.")
-
-    def join_voice(self):
-        if not self.running or not self.bot or not self.bot.loop or not self.bot.loop.is_running():
-            push_log(self.name, "Bot belum login! Tunggu status ONLINE.")
-            return False
-        asyncio.run_coroutine_threadsafe(self._join_voice_coro(), self.bot.loop)
-        return True
-
-    async def _join_voice_coro(self):
-        guild_id = int(self.acc["guild_id"])
-        channel_id = int(self.acc["channel_id"])
-        mute = self.acc.get("self_mute", True)
-        deaf = self.acc.get("self_deaf", True)
-
-        guild = self.bot.get_guild(guild_id)
+    async def action_join_voice(self):
+        guild = self.get_guild(self.guild_id)
         if not guild:
-            push_log(self.name, f"ERROR: Server ID {guild_id} tidak ditemukan pada akun ini!")
-            status_map[self.name] = {"status": "ERROR", "detail": "Server ID invalid"}
-            return
+            push_log(self.account_name, f"ERROR: Server ID {self.guild_id} tidak ditemukan!")
+            status_map[self.account_name] = {"status": "ERROR", "detail": "Server ID invalid"}
+            return False
 
-        channel = guild.get_channel(channel_id)
+        channel = guild.get_channel(self.channel_id)
         if not channel:
-            push_log(self.name, f"ERROR: Voice Channel ID {channel_id} tidak ditemukan di {guild.name}!")
-            status_map[self.name] = {"status": "ERROR", "detail": "Channel ID invalid"}
-            return
+            push_log(self.account_name, f"ERROR: Voice Channel ID {self.channel_id} tidak ditemukan di {guild.name}!")
+            status_map[self.account_name] = {"status": "ERROR", "detail": "Channel ID invalid"}
+            return False
 
-        status_map[self.name] = {"status": "CONNECTING", "detail": f"Join #{channel.name}..."}
-        push_log(self.name, f"Menghubungkan ke #{channel.name}...")
+        status_map[self.account_name] = {"status": "CONNECTING", "detail": f"Join #{channel.name}..."}
+        push_log(self.account_name, f"Menghubungkan ke #{channel.name}...")
 
-        # Pastikan voice client lama ditutup jika ada
-        for vc_item in list(self.bot.voice_clients):
+        # Bersihkan voice client lama jika ada
+        for vc_item in list(self.voice_clients):
             try:
                 await vc_item.disconnect(force=True)
             except Exception:
                 pass
 
         try:
-            vc_client = await channel.connect(self_mute=mute, self_deaf=deaf, timeout=15.0)
+            # Connect langsung dengan mute & deafen native (sekali handshake, tidak loop)
+            vc_client = await channel.connect(self_mute=self.self_mute, self_deaf=self.self_deaf, timeout=12.0)
             await asyncio.sleep(1.0)
 
-            # VERIFIKASI KONEKSI
             if vc_client.is_connected() and vc_client.channel and (vc_client.channel.id == channel.id):
                 self.in_voice = True
-                m = " [Muted]" if mute else ""
-                d = " [Deafened]" if deaf else ""
-                push_log(self.name, f"BERHASIL stay di #{channel.name} @ {guild.name}{m}{d}!")
-                status_map[self.name] = {"status": "VOICE", "detail": f"#{channel.name}"}
+                m = " [Muted]" if self.self_mute else ""
+                d = " [Deafened]" if self.self_deaf else ""
+                push_log(self.account_name, f"BERHASIL stay di #{channel.name} @ {guild.name}{m}{d}!")
+                status_map[self.account_name] = {"status": "VOICE", "detail": f"#{channel.name}"}
+                return True
             else:
-                push_log(self.name, f"Gagal masuk: Voice client tidak stabil di #{channel.name}.")
-                status_map[self.name] = {"status": "ONLINE", "detail": "Gagal join"}
+                push_log(self.account_name, f"Koneksi belum stabil di #{channel.name}. Coba lagi.")
+                status_map[self.account_name] = {"status": "ONLINE", "detail": "Gagal join"}
+                return False
         except Exception as e:
-            push_log(self.name, f"Gagal masuk voice: {e}")
-            status_map[self.name] = {"status": "ONLINE", "detail": "Join voice error"}
+            push_log(self.account_name, f"Gagal masuk voice: {e}")
+            status_map[self.account_name] = {"status": "ONLINE", "detail": "Join error"}
+            return False
 
-    def leave_voice(self):
-        if not self.bot or not self.bot.loop or not self.bot.loop.is_running():
-            return
+    async def action_leave_voice(self):
         self.in_voice = False
-        push_log(self.name, "Keluar dari voice channel...")
-        status_map[self.name] = {"status": "ONLINE", "detail": "Standby"}
+        push_log(self.account_name, "Keluar dari voice channel...")
+        status_map[self.account_name] = {"status": "ONLINE", "detail": "Standby"}
 
-        async def _leave():
-            for vc_item in list(self.bot.voice_clients):
-                try:
-                    await vc_item.disconnect(force=True)
-                except Exception:
-                    pass
+        for vc_item in list(self.voice_clients):
+            try:
+                await vc_item.disconnect(force=True)
+            except Exception:
+                pass
 
-        asyncio.run_coroutine_threadsafe(_leave(), self.bot.loop)
-
-    def stop(self):
-        if not self.running:
-            return
-        self.running = False
+    async def action_stop(self):
+        self.is_active = False
         self.in_voice = False
-        push_log(self.name, "Mematikan bot total...")
-        status_map[self.name] = {"status": "OFFLINE", "detail": ""}
+        push_log(self.account_name, "Mematikan koneksi bot...")
+        status_map[self.account_name] = {"status": "OFFLINE", "detail": ""}
 
-        if self.bot and self.bot.loop and self.bot.loop.is_running():
-            async def _close():
-                for vc_item in list(self.bot.voice_clients):
-                    try:
-                        await vc_item.disconnect(force=True)
-                    except Exception:
-                        pass
-                try:
-                    for guild in list(self.bot.guilds):
-                        await guild.change_voice_state(channel=None)
-                except Exception:
-                    pass
-                await self.bot.close()
-
-            asyncio.run_coroutine_threadsafe(_close(), self.bot.loop)
+        for vc_item in list(self.voice_clients):
+            try:
+                await vc_item.disconnect(force=True)
+            except Exception:
+                pass
+        await self.close()
 
 
 # ============================================
-#  Flask Web Dashboard
+#  Flask Web Dashboard (Lightweight & Mobile Friendly)
 # ============================================
 app = Flask(__name__)
 
@@ -276,7 +227,6 @@ HTML = """<!DOCTYPE html>
       --text: #e6edf3;
       --text-muted: #8b949e;
       --primary: #5865f2;
-      --primary-hover: #4752c4;
       --success: #23a55a;
       --danger: #da373c;
     }
@@ -285,58 +235,59 @@ HTML = """<!DOCTYPE html>
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg);
       color: var(--text);
-      padding: 16px;
+      padding: 14px;
       min-height: 100vh;
     }
-    .container { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
-    .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
-    .title h1 { font-size: 20px; font-weight: 700; }
+    .container { max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+    .header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+    .title h1 { font-size: 19px; font-weight: 700; }
     .title p { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
     button {
-      font-family: inherit; font-size: 13px; font-weight: 600; padding: 8px 14px;
+      font-family: inherit; font-size: 13px; font-weight: 600; padding: 7px 12px;
       border-radius: 6px; border: none; cursor: pointer; transition: 0.15s;
     }
     .btn-primary { background: var(--primary); color: #fff; }
     .btn-success { background: var(--success); color: #fff; }
     .btn-danger { background: var(--danger); color: #fff; }
     .btn-dark { background: #232936; color: var(--text); }
-    .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 10px; overflow: hidden; padding: 16px; }
-    .card-title { font-weight: 600; font-size: 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-    .item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--card-border); }
+    .card { background: var(--card); border: 1px solid var(--card-border); border-radius: 8px; overflow: hidden; padding: 14px; }
+    .card-title { font-weight: 600; font-size: 13px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+    .item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--card-border); }
     .item:last-child { border-bottom: none; }
-    .status { padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }
+    .status { padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: bold; }
     .st-VOICE { background: rgba(35,165,90,0.2); color: #57f287; }
     .st-ONLINE { background: rgba(35,165,90,0.2); color: #57f287; }
     .st-CONNECTING { background: rgba(240,178,50,0.2); color: #fee75c; }
+    .st-RECONNECTING { background: rgba(240,178,50,0.2); color: #fee75c; }
     .st-OFFLINE { background: #232936; color: #8b949e; }
     .st-ERROR { background: rgba(218,55,60,0.2); color: #ed4245; }
-    .log-box { background: #07090e; border-radius: 6px; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; height: 140px; overflow-y: auto; color: #9cdcfe; line-height: 1.4; }
-    input[type=text], input[type=password] { width: 100%; box-sizing: border-box; background: #0b0e14; border: 1px solid var(--card-border); color: #fff; padding: 9px; border-radius: 6px; margin: 4px 0 10px 0; }
+    .log-box { background: #07090e; border-radius: 6px; padding: 10px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; height: 140px; overflow-y: auto; color: #9cdcfe; line-height: 1.4; }
+    input[type=text], input[type=password] { width: 100%; box-sizing: border-box; background: #0b0e14; border: 1px solid var(--card-border); color: #fff; padding: 8px; border-radius: 6px; margin: 4px 0 8px 0; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
       <div class="title">
-        <h1>Discord Voice Stay Manager</h1>
-        <p>Login standby otomatis. Klik tombol hijau untuk Join Voice.</p>
+        <h1>Discord Voice Stay (Neura Engine)</h1>
+        <p>Login standby otomatis. Klik hijau untuk Join Voice.</p>
       </div>
       <div class="actions">
-        <button class="btn-primary" onclick="toggleForm()">+ Tambah Akun</button>
+        <button class="btn-primary" onclick="toggleForm()">+ Akun</button>
         <button class="btn-success" onclick="fetch('/api/join_all',{method:'POST'}).then(load)">Join All</button>
         <button class="btn-danger" onclick="fetch('/api/leave_all',{method:'POST'}).then(load)">Leave All</button>
-        <button class="btn-dark" style="color:#ff7b72; border:1px solid var(--danger);" onclick="shutdown()">Shutdown</button>
+        <button class="btn-dark" style="color:#ff7b72" onclick="shutdown()">Shutdown</button>
       </div>
     </div>
 
     <div class="card" id="form-card" style="display: none;">
       <div class="card-title">Tambah / Ubah Akun</div>
-      <input type="text" id="acc-name" placeholder="Nama Akun (contoh: Akun 1)">
+      <input type="text" id="acc-name" placeholder="Nama Akun">
       <input type="password" id="acc-token" placeholder="Token Discord">
       <input type="text" id="acc-guild" placeholder="Server ID">
       <input type="text" id="acc-channel" placeholder="Voice Channel ID">
-      <div style="display:flex; gap:10px;">
+      <div style="display:flex; gap:8px;">
         <button class="btn-success" onclick="saveAccount()">Simpan</button>
         <button class="btn-dark" onclick="toggleForm()">Batal</button>
       </div>
@@ -350,7 +301,7 @@ HTML = """<!DOCTYPE html>
     <div class="card">
       <div class="card-title">
         <span>Console Log</span>
-        <button class="btn-dark" style="font-size:11px; padding:4px 8px;" onclick="fetch('/api/clear_logs',{method:'POST'}).then(load)">Clear Log</button>
+        <button class="btn-dark" style="font-size:11px; padding:3px 7px;" onclick="fetch('/api/clear_logs',{method:'POST'}).then(load)">Clear</button>
       </div>
       <div class="log-box" id="logs"></div>
     </div>
@@ -368,20 +319,18 @@ HTML = """<!DOCTYPE html>
         const data = await res.json();
         const list = document.getElementById('acc-list');
         if (!data.accounts.length) {
-          list.innerHTML = '<p style="color:#8b949e; text-align:center; padding:15px;">Belum ada akun. Klik tombol "+ Tambah Akun".</p>';
+          list.innerHTML = '<p style="color:#8b949e; text-align:center; padding:10px;">Belum ada akun.</p>';
           return;
         }
         list.innerHTML = data.accounts.map(a => {
           const s = data.statuses[a.name] || {status: 'OFFLINE', detail: ''};
           let actionBtn = '';
           if (s.status === 'VOICE') {
-            actionBtn = `<button class="btn-danger" style="padding:5px 10px; font-size:12px;" onclick="fetch('/api/voice/leave',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'${escape(a.name)}'})}).then(load)">Leave VC</button>`;
+            actionBtn = `<button class="btn-danger" style="padding:4px 8px; font-size:12px;" onclick="fetch('/api/voice/leave',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'${escape(a.name)}'})}).then(load)">Leave VC</button>`;
           } else if (s.status === 'ONLINE') {
-            actionBtn = `<button class="btn-success" style="padding:5px 10px; font-size:12px;" onclick="fetch('/api/voice/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'${escape(a.name)}'})}).then(load)">Join Voice</button>`;
-          } else if (s.status === 'OFFLINE' || s.status === 'ERROR') {
-            actionBtn = `<button class="btn-primary" style="padding:5px 10px; font-size:12px;" onclick="fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'${escape(a.name)}'})}).then(load)">Login</button>`;
+            actionBtn = `<button class="btn-success" style="padding:4px 8px; font-size:12px;" onclick="fetch('/api/voice/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'${escape(a.name)}'})}).then(load)">Join Voice</button>`;
           } else {
-            actionBtn = `<button class="btn-dark" style="padding:5px 10px; font-size:12px;" disabled>...</button>`;
+            actionBtn = `<button class="btn-dark" style="padding:4px 8px; font-size:12px;" disabled>...</button>`;
           }
 
           return `
@@ -389,11 +338,11 @@ HTML = """<!DOCTYPE html>
               <div>
                 <strong>${escape(a.name)}</strong><br>
                 <span class="status st-${s.status}">${s.status}</span>
-                <small style="color:#8b949e; margin-left:6px;">${escape(s.detail)}</small>
+                <small style="color:#8b949e; margin-left:4px;">${escape(s.detail)}</small>
               </div>
-              <div style="display:flex; gap:6px;">
+              <div style="display:flex; gap:5px;">
                 ${actionBtn}
-                <button class="btn-dark" style="padding:5px 8px; font-size:12px; color:#ff7b72;" onclick="del('${escape(a.name)}')">&times;</button>
+                <button class="btn-dark" style="padding:4px 8px; font-size:12px; color:#ff7b72;" onclick="del('${escape(a.name)}')">&times;</button>
               </div>
             </div>
           `;
@@ -410,7 +359,7 @@ HTML = """<!DOCTYPE html>
       const token = document.getElementById('acc-token').value.trim();
       const guild = document.getElementById('acc-guild').value.trim();
       const channel = document.getElementById('acc-channel').value.trim();
-      if (!name || !token || !guild || !channel) { alert("Semua kolom harus diisi!"); return; }
+      if (!name || !token || !guild || !channel) { alert("Semua field wajib diisi!"); return; }
 
       await fetch('/api/save', {
         method: 'POST',
@@ -432,9 +381,9 @@ HTML = """<!DOCTYPE html>
     }
 
     async function shutdown() {
-      if (!confirm("Matikan server dan semua bot?")) return;
+      if (!confirm("Matikan server bot?")) return;
       await fetch('/api/shutdown', {method:'POST'});
-      document.body.innerHTML = '<div style="text-align:center; padding:50px; color:#8b949e;"><h2>Server telah dimatikan.</h2><p>Tab ini bisa ditutup.</p></div>';
+      document.body.innerHTML = '<div style="text-align:center; padding:40px; color:#8b949e;">Server dimatikan.</div>';
     }
 
     function escape(s) {
@@ -470,72 +419,32 @@ def api_state():
 @app.route("/api/voice/join", methods=["POST"])
 def api_voice_join():
     name = request.json.get("name")
-    if name in active_runners:
-        active_runners[name].join_voice()
+    if name in bots and main_loop and main_loop.is_running():
+        asyncio.run_coroutine_threadsafe(bots[name].action_join_voice(), main_loop)
     return jsonify({"ok": True})
 
 
 @app.route("/api/voice/leave", methods=["POST"])
 def api_voice_leave():
     name = request.json.get("name")
-    if name in active_runners:
-        active_runners[name].leave_voice()
+    if name in bots and main_loop and main_loop.is_running():
+        asyncio.run_coroutine_threadsafe(bots[name].action_leave_voice(), main_loop)
     return jsonify({"ok": True})
 
 
 @app.route("/api/join_all", methods=["POST"])
 def api_join_all():
-    for runner in active_runners.values():
-        if runner.running:
-            runner.join_voice()
+    if main_loop and main_loop.is_running():
+        for bot_instance in bots.values():
+            asyncio.run_coroutine_threadsafe(bot_instance.action_join_voice(), main_loop)
     return jsonify({"ok": True})
 
 
 @app.route("/api/leave_all", methods=["POST"])
 def api_leave_all():
-    for runner in active_runners.values():
-        if runner.running:
-            runner.leave_voice()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/start", methods=["POST"])
-def api_start():
-    name = request.json.get("name")
-    acc = next((a for a in load_accounts() if a["name"] == name), None)
-    if acc and (name not in active_runners or not active_runners[name].running):
-        r = BotRunner(acc)
-        active_runners[name] = r
-        r.start()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/stop", methods=["POST"])
-def api_stop():
-    name = request.json.get("name")
-    if name in active_runners:
-        active_runners[name].stop()
-        status_map[name] = {"status": "OFFLINE", "detail": ""}
-    return jsonify({"ok": True})
-
-
-@app.route("/api/start_all", methods=["POST"])
-def api_start_all():
-    for acc in load_accounts():
-        name = acc["name"]
-        if name not in active_runners or not active_runners[name].running:
-            r = BotRunner(acc)
-            active_runners[name] = r
-            r.start()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/stop_all", methods=["POST"])
-def api_stop_all():
-    for r in active_runners.values():
-        r.stop()
-    for a in load_accounts():
-        status_map[a["name"]] = {"status": "OFFLINE", "detail": ""}
+    if main_loop and main_loop.is_running():
+        for bot_instance in bots.values():
+            asyncio.run_coroutine_threadsafe(bot_instance.action_leave_voice(), main_loop)
     return jsonify({"ok": True})
 
 
@@ -545,14 +454,20 @@ def api_save():
     accs = [a for a in load_accounts() if a["name"] != d["name"]]
     accs.append(d)
     save_accounts(accs)
+    # Jalankan bot baru di event loop utama
+    if main_loop and main_loop.is_running():
+        bot_instance = BotClient(d)
+        bots[d["name"]] = bot_instance
+        asyncio.run_coroutine_threadsafe(bot_instance.start(d["token"]), main_loop)
     return jsonify({"ok": True})
 
 
 @app.route("/api/delete", methods=["POST"])
 def api_delete():
     name = request.json.get("name")
-    if name in active_runners:
-        active_runners[name].stop()
+    if name in bots and main_loop and main_loop.is_running():
+        asyncio.run_coroutine_threadsafe(bots[name].action_stop(), main_loop)
+        del bots[name]
     save_accounts([a for a in load_accounts() if a["name"] != name])
     if name in status_map:
         del status_map[name]
@@ -568,8 +483,10 @@ def api_clear_logs():
 
 @app.route("/api/shutdown", methods=["POST"])
 def api_shutdown():
-    for r in active_runners.values():
-        r.stop()
+    if main_loop and main_loop.is_running():
+        for b in list(bots.values()):
+            asyncio.run_coroutine_threadsafe(b.action_stop(), main_loop)
+
     def _exit():
         import time
         time.sleep(1)
@@ -578,23 +495,50 @@ def api_shutdown():
     return jsonify({"ok": True})
 
 
-if __name__ == "__main__":
-    port = 5050
-    print("=" * 45)
-    print("  Discord Voice Stay Multi-Bot (Single File)")
-    print(f"  Buka di Browser: http://localhost:{port}")
-    print("=" * 45)
+# ============================================
+#  Main Entry Point (Neura-Self Pattern)
+# ============================================
+def run_flask():
+    app.run(host="0.0.0.0", port=5050, debug=False, use_reloader=False, threaded=True)
 
-    # Login semua akun ke Discord gateway (standby)
-    for acc in load_accounts():
+
+async def main_async():
+    global main_loop
+    main_loop = asyncio.get_running_loop()
+
+    # 1. Jalankan Dashboard Flask di background thread (seperti neura.py)
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    print("=" * 50)
+    print("  Discord Voice Stay (Powered by Neura Engine)")
+    print("  Dashboard: http://127.0.0.1:5050")
+    print("=" * 50)
+
+    # 2. Inisialisasi dan jalankan semua akun di dalam main loop
+    accounts = load_accounts()
+    for acc in accounts:
         name = acc["name"]
-        if name not in active_runners or not active_runners[name].running:
-            runner = BotRunner(acc)
-            active_runners[name] = runner
-            runner.start()
+        token = acc.get("token")
+        if not token:
+            continue
+        bot_instance = BotClient(acc)
+        bots[name] = bot_instance
+        status_map[name] = {"status": "CONNECTING", "detail": "Login..."}
+        asyncio.create_task(bot_instance.start(token))
 
-    # Buka browser otomatis jika dijalankan di desktop
+    # Buka browser otomatis di PC
     if sys.platform == "win32":
-        threading.Thread(target=lambda: (asyncio.run(asyncio.sleep(1.5)), webbrowser.open(f"http://localhost:{port}")), daemon=True).start()
+        threading.Thread(target=lambda: (time.sleep(1.5), webbrowser.open("http://127.0.0.1:5050")), daemon=True).start()
 
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    # Keep alive main loop
+    while True:
+        await asyncio.sleep(3600)
+
+
+if __name__ == "__main__":
+    import time
+    try:
+        asyncio.run(main_async())
+    except (KeyboardInterrupt, SystemExit):
+        print("\n[Shutdown] Menutup bot...")
