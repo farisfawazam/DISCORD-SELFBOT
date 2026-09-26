@@ -96,7 +96,14 @@ class BotRunner:
     def _run(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        self.bot = commands.Bot(command_prefix="!", self_bot=True)
+        self.bot = commands.Bot(
+            command_prefix="!",
+            self_bot=True,
+            chunk_guilds_at_startup=False,
+            member_cache_flags=discord.MemberCacheFlags.none(),
+            max_messages=None,
+            sync_presence=False,
+        )
         token = self.acc["token"]
         guild_id = int(self.acc["guild_id"])
         channel_id = int(self.acc["channel_id"])
