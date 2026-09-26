@@ -8,11 +8,35 @@ import asyncio
 import logging
 from datetime import datetime
 import webbrowser
+import types
 
-# User site packages
+# Pastikan path user site-packages terbaca
 user_site = site.getusersitepackages()
 if os.path.exists(user_site) and user_site not in sys.path:
     sys.path.insert(0, user_site)
+
+# Mock PyNaCl in-memory (karena stay di voice tanpa kirim audio tidak butuh libsodium C)
+if "nacl" not in sys.modules:
+    nacl = types.ModuleType("nacl")
+    nacl_secret = types.ModuleType("nacl.secret")
+    nacl_utils = types.ModuleType("nacl.utils")
+
+    class _DummyBox:
+        NONCE_SIZE = 24
+        def __init__(self, *args, **kwargs): pass
+        def encrypt(self, data, *args, **kwargs):
+            r = type("R", (), {})()
+            r.ciphertext = b""
+            return r
+
+    nacl_secret.SecretBox = _DummyBox
+    nacl_secret.Aead = _DummyBox
+    nacl_utils.random = lambda n: b"0" * n
+    nacl.secret = nacl_secret
+    nacl.utils = nacl_utils
+    sys.modules["nacl"] = nacl
+    sys.modules["nacl.secret"] = nacl_secret
+    sys.modules["nacl.utils"] = nacl_utils
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 if sys.platform == "win32":
@@ -21,7 +45,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-# Force enable has_nacl agar tidak crash
+from flask import Flask, jsonify, request, render_template_string
 import discord
 import discord.voice_client as vc
 from discord.ext import commands
@@ -31,7 +55,7 @@ vc.has_nacl = True
 logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
-# Path deteksi (/storage/emulated/0/discord-selfbot atau local)
+# Auto detect direktori kerja (HP /storage/emulated/0/discord-selfbot atau PC)
 CANDIDATE_DIRS = [
     "/storage/emulated/0/discord-selfbot",
     os.path.dirname(os.path.abspath(__file__)),
@@ -138,7 +162,6 @@ class BotClient(commands.Bot):
         status_map[self.account_name] = {"status": "CONNECTING", "detail": f"Join #{channel.name}..."}
         push_log(self.account_name, f"Menghubungkan ke #{channel.name}...")
 
-        # Bersihkan voice client lama jika ada
         for vc_item in list(self.voice_clients):
             try:
                 await vc_item.disconnect(force=True)
@@ -146,7 +169,7 @@ class BotClient(commands.Bot):
                 pass
 
         try:
-            vc_client = await channel.connect(self_mute=self.self_mute, self_deaf=self.self_deaf, timeout=25.0)
+            vc_client = await channel.connect(self_mute=self.self_mute, self_deaf=self.self_deaf, timeout=20.0)
             await asyncio.sleep(1.0)
 
             if vc_client.is_connected():
@@ -252,7 +275,7 @@ HTML = """<!DOCTYPE html>
   <div class="container">
     <div class="header">
       <div class="title">
-        <h1>Discord Voice Stay (Neura Engine)</h1>
+        <h1>Discord Voice Stay Manager</h1>
         <p>Login standby otomatis. Klik hijau untuk Join Voice.</p>
       </div>
       <div class="actions">
@@ -487,7 +510,7 @@ async def main_async():
     flask_thread.start()
 
     print("\n" + "=" * 50)
-    print("  Discord Voice Stay (Gaya NeuraSelf Engine)")
+    print("  Discord Voice Stay Multi-Bot")
     print(f"  Direktori: {BASE_DIR}")
     print("  Dashboard: http://127.0.0.1:5050")
     print("=" * 50 + "\n")
