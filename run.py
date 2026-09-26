@@ -200,23 +200,18 @@ class BotRunner:
 
         try:
             vc_client = await channel.connect(self_mute=mute, self_deaf=deaf, timeout=15.0)
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(1.0)
 
             # VERIFIKASI KONEKSI
-            # Tidak menggunakan guild.me karena member cache dinonaktifkan demi performa cepat
             if vc_client.is_connected() and vc_client.channel and (vc_client.channel.id == channel.id):
-                try:
-                    await guild.change_voice_state(channel=channel, self_mute=mute, self_deaf=deaf)
-                except Exception:
-                    pass
                 self.in_voice = True
                 m = " [Muted]" if mute else ""
                 d = " [Deafened]" if deaf else ""
-                push_log(self.name, f"BERHASIL masuk voice #{channel.name} @ {guild.name}{m}{d}!")
+                push_log(self.name, f"BERHASIL stay di #{channel.name} @ {guild.name}{m}{d}!")
                 status_map[self.name] = {"status": "VOICE", "detail": f"#{channel.name}"}
             else:
-                push_log(self.name, f"Verifikasi gagal: Voice client tidak terhubung ke #{channel.name}.")
-                status_map[self.name] = {"status": "ONLINE", "detail": "Gagal masuk voice"}
+                push_log(self.name, f"Gagal masuk: Voice client tidak stabil di #{channel.name}.")
+                status_map[self.name] = {"status": "ONLINE", "detail": "Gagal join"}
         except Exception as e:
             push_log(self.name, f"Gagal masuk voice: {e}")
             status_map[self.name] = {"status": "ONLINE", "detail": "Join voice error"}
@@ -234,11 +229,6 @@ class BotRunner:
                     await vc_item.disconnect(force=True)
                 except Exception:
                     pass
-            try:
-                for guild in list(self.bot.guilds):
-                    await guild.change_voice_state(channel=None)
-            except Exception:
-                pass
 
         asyncio.run_coroutine_threadsafe(_leave(), self.bot.loop)
 
@@ -451,8 +441,17 @@ HTML = """<!DOCTYPE html>
       return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
+    let isFetching = false;
+    async function loopLoad() {
+      if (!document.hidden && !isFetching) {
+        isFetching = true;
+        try { await load(); } catch(e){}
+        isFetching = false;
+      }
+      setTimeout(loopLoad, 2500);
+    }
     load();
-    setInterval(load, 2000);
+    setTimeout(loopLoad, 2500);
   </script>
 </body>
 </html>"""
@@ -586,11 +585,13 @@ if __name__ == "__main__":
     print(f"  Buka di Browser: http://localhost:{port}")
     print("=" * 45)
 
-    # Auto connect semua akun saat pertama kali run
+    # Login semua akun ke Discord gateway (standby)
     for acc in load_accounts():
-        runner = BotRunner(acc)
-        active_runners[acc["name"]] = runner
-        runner.start()
+        name = acc["name"]
+        if name not in active_runners or not active_runners[name].running:
+            runner = BotRunner(acc)
+            active_runners[name] = runner
+            runner.start()
 
     # Buka browser otomatis jika dijalankan di desktop
     if sys.platform == "win32":
