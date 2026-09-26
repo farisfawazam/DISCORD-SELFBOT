@@ -1,73 +1,6 @@
 import sys
 import os
 import site
-import subprocess
-import types
-
-# =======================================================
-# 1. PURE-PYTHON MOCK PYNaCl & DAVEY (Bypass Semua C/Rust Compiler di HP)
-# =======================================================
-if "nacl" not in sys.modules:
-    nacl = types.ModuleType("nacl")
-    nacl_secret = types.ModuleType("nacl.secret")
-    nacl_utils = types.ModuleType("nacl.utils")
-
-    class _DummyBox:
-        NONCE_SIZE = 24
-        def __init__(self, *args, **kwargs): pass
-        def encrypt(self, data, *args, **kwargs):
-            r = type("R", (), {})()
-            r.ciphertext = b""
-            return r
-
-    nacl_secret.SecretBox = _DummyBox
-    nacl_secret.Aead = _DummyBox
-    nacl_utils.random = lambda n: b"0" * n
-    nacl.secret = nacl_secret
-    nacl.utils = nacl_utils
-    sys.modules["nacl"] = nacl
-    sys.modules["nacl.secret"] = nacl_secret
-    sys.modules["nacl.utils"] = nacl_utils
-
-if "davey" not in sys.modules:
-    davey = types.ModuleType("davey")
-    davey.DAVE_PROTOCOL_VERSION = 0
-
-    class _DummyDave:
-        def __init__(self, *a, **k): pass
-        def get_serialized_key_package(self): return b""
-        def reset(self): pass
-        def set_passthrough_mode(self, *a): pass
-
-    davey.DaveSession = _DummyDave
-    sys.modules["davey"] = davey
-
-# =======================================================
-# 2. AUTO-INSTALL HANYA DEPENDENCY YANG BISA DI-INSTALL (TANPA DAVEY/NACL)
-# =======================================================
-REQUIRED_PACKAGES = {
-    "discord": "discord.py-self>=2.1.0",
-    "flask": "flask>=2.0.0",
-}
-
-missing = []
-for module_name, pip_name in REQUIRED_PACKAGES.items():
-    try:
-        __import__(module_name)
-    except ImportError:
-        missing.append(pip_name)
-
-if missing:
-    print("=" * 50)
-    print(f"  [Auto-Setup] Menginstall dependency ringan: {', '.join(missing)}")
-    print("  Mohon tunggu sebentar...")
-    print("=" * 50)
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing)
-        print("[Auto-Setup] Instalasi selesai! Melanjutkan...")
-    except Exception as e:
-        print(f"[Auto-Setup] Gagal auto-install ({e}). Mencoba lanjut...")
-
 import time
 import json
 import threading
@@ -76,7 +9,7 @@ import logging
 from datetime import datetime
 import webbrowser
 
-# Pastikan path user site-packages terbaca
+# User site packages
 user_site = site.getusersitepackages()
 if os.path.exists(user_site) and user_site not in sys.path:
     sys.path.insert(0, user_site)
@@ -88,7 +21,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from flask import Flask, jsonify, request, render_template_string
+# Force enable has_nacl agar tidak crash
 import discord
 import discord.voice_client as vc
 from discord.ext import commands
@@ -98,12 +31,10 @@ vc.has_nacl = True
 logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
-# =======================================================
-# 3. AUTO-DETECT DIRECTORY (Kompatibel dengan /storage/emulated/0/discord-selfbot)
-# =======================================================
+# Path deteksi (/storage/emulated/0/discord-selfbot atau local)
 CANDIDATE_DIRS = [
-    os.path.dirname(os.path.abspath(__file__)),
     "/storage/emulated/0/discord-selfbot",
+    os.path.dirname(os.path.abspath(__file__)),
     os.path.expanduser("~/selfbot"),
 ]
 
@@ -132,7 +63,7 @@ def save_accounts(accs):
 
 
 # ============================================
-#  Global Shared State & Asyncio Loop
+#  Global Shared State & Core Bot Client
 # ============================================
 log_buffer = []
 status_map = {}
@@ -144,6 +75,7 @@ def push_log(name, msg):
     ts = datetime.now().strftime("%H:%M:%S")
     entry = f"[{ts}] [{name}] {msg}"
     log_buffer.append(entry)
+    print(entry)
     if len(log_buffer) > 150:
         log_buffer.pop(0)
 
@@ -182,7 +114,7 @@ class BotClient(commands.Bot):
             return
 
         self.is_reconnecting = True
-        push_log(self.account_name, "Koneksi voice drop. Reconnecting dalam 5s...")
+        push_log(self.account_name, "Koneksi voice drop. Reconnecting dalam 5 detik...")
         status_map[self.account_name] = {"status": "RECONNECTING", "detail": "Waiting 5s"}
         await asyncio.sleep(5)
 
@@ -199,13 +131,14 @@ class BotClient(commands.Bot):
 
         channel = guild.get_channel(self.channel_id)
         if not channel:
-            push_log(self.account_name, f"ERROR: Voice Channel ID {self.channel_id} tidak ditemukan!")
+            push_log(self.account_name, f"ERROR: Voice Channel ID {self.channel_id} tidak ditemukan di {guild.name}!")
             status_map[self.account_name] = {"status": "ERROR", "detail": "Channel ID invalid"}
             return False
 
         status_map[self.account_name] = {"status": "CONNECTING", "detail": f"Join #{channel.name}..."}
         push_log(self.account_name, f"Menghubungkan ke #{channel.name}...")
 
+        # Bersihkan voice client lama jika ada
         for vc_item in list(self.voice_clients):
             try:
                 await vc_item.disconnect(force=True)
@@ -213,10 +146,10 @@ class BotClient(commands.Bot):
                 pass
 
         try:
-            vc_client = await channel.connect(self_mute=self.self_mute, self_deaf=self.self_deaf, timeout=20.0)
+            vc_client = await channel.connect(self_mute=self.self_mute, self_deaf=self.self_deaf, timeout=25.0)
             await asyncio.sleep(1.0)
 
-            if vc_client.is_connected() and vc_client.channel and (vc_client.channel.id == channel.id):
+            if vc_client.is_connected():
                 self.in_voice = True
                 m = " [Muted]" if self.self_mute else ""
                 d = " [Deafened]" if self.self_deaf else ""
@@ -319,7 +252,7 @@ HTML = """<!DOCTYPE html>
   <div class="container">
     <div class="header">
       <div class="title">
-        <h1>Discord Voice Stay (Turbo)</h1>
+        <h1>Discord Voice Stay (Neura Engine)</h1>
         <p>Login standby otomatis. Klik hijau untuk Join Voice.</p>
       </div>
       <div class="actions">
@@ -553,11 +486,11 @@ async def main_async():
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    print("=" * 50)
-    print("  Discord Voice Stay (Clean Standalone)")
-    print(f"  Folder: {BASE_DIR}")
+    print("\n" + "=" * 50)
+    print("  Discord Voice Stay (Gaya NeuraSelf Engine)")
+    print(f"  Direktori: {BASE_DIR}")
     print("  Dashboard: http://127.0.0.1:5050")
-    print("=" * 50)
+    print("=" * 50 + "\n")
 
     accounts = load_accounts()
     for acc in accounts:
