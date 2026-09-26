@@ -278,8 +278,6 @@ HTML = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Discord Voice Multi-Bot</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg: #0b0e14;
@@ -294,7 +292,7 @@ HTML = """<!DOCTYPE html>
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Inter', sans-serif;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg);
       color: var(--text);
       padding: 16px;
@@ -323,7 +321,7 @@ HTML = """<!DOCTYPE html>
     .st-CONNECTING { background: rgba(240,178,50,0.2); color: #fee75c; }
     .st-OFFLINE { background: #232936; color: #8b949e; }
     .st-ERROR { background: rgba(218,55,60,0.2); color: #ed4245; }
-    .log-box { background: #07090e; border-radius: 6px; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; height: 160px; overflow-y: auto; color: #9cdcfe; line-height: 1.5; }
+    .log-box { background: #07090e; border-radius: 6px; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11px; height: 140px; overflow-y: auto; color: #9cdcfe; line-height: 1.4; }
     input[type=text], input[type=password] { width: 100%; box-sizing: border-box; background: #0b0e14; border: 1px solid var(--card-border); color: #fff; padding: 9px; border-radius: 6px; margin: 4px 0 10px 0; }
   </style>
 </head>
@@ -598,4 +596,4 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         threading.Thread(target=lambda: (asyncio.run(asyncio.sleep(1.5)), webbrowser.open(f"http://localhost:{port}")), daemon=True).start()
 
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
