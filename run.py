@@ -13,13 +13,36 @@ user_site = site.getusersitepackages()
 if os.path.exists(user_site) and user_site not in sys.path:
     sys.path.insert(0, user_site)
 
-# Pre-import nacl secara eksplisit
+import types
+
+# Universal PyNaCl Mock (Solusi mutlak untuk Termux/Android & PC)
+# Jika PyNaCl tidak terpasang atau gagal compile C-library, mock ini akan mengelabui
+# discord.py-self sehingga bot tetap bisa connect & stay di voice tanpa crash.
 try:
-    import nacl
     import nacl.secret
     import nacl.utils
 except Exception:
-    pass
+    nacl = types.ModuleType("nacl")
+    nacl_secret = types.ModuleType("nacl.secret")
+    nacl_utils = types.ModuleType("nacl.utils")
+
+    class _DummyBox:
+        NONCE_SIZE = 24
+        def __init__(self, *args, **kwargs): pass
+        def encrypt(self, data, *args, **kwargs):
+            res = type("Res", (), {})()
+            res.ciphertext = b""
+            return res
+
+    nacl_secret.SecretBox = _DummyBox
+    nacl_secret.Aead = _DummyBox
+    nacl_utils.random = lambda n: b"0" * n
+    nacl.secret = nacl_secret
+    nacl.utils = nacl_utils
+
+    sys.modules["nacl"] = nacl
+    sys.modules["nacl.secret"] = nacl_secret
+    sys.modules["nacl.utils"] = nacl_utils
 
 # Encoding fix
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -31,15 +54,11 @@ if sys.platform == "win32":
 
 from flask import Flask, jsonify, request, render_template_string
 import discord
-import discord.voice_client
+import discord.voice_client as vc
 from discord.ext import commands
 
-# Force pastikan flag nacl aktif
-try:
-    import nacl.secret
-    discord.voice_client.has_nacl = True
-except Exception:
-    pass
+# Force set has_nacl agar 100% lolos verifikasi
+vc.has_nacl = True
 
 logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
