@@ -105,6 +105,8 @@ class BotRunner:
         self.bot = None
         self.loop = None
         self.running = False
+        self.in_voice = False
+        self.reconnecting = False
 
     def start(self):
         if self.running:
@@ -124,121 +126,148 @@ class BotRunner:
             sync_presence=False,
         )
         token = self.acc["token"]
-        guild_id = int(self.acc["guild_id"])
-        channel_id = int(self.acc["channel_id"])
-        mute = self.acc.get("self_mute", True)
-        deaf = self.acc.get("self_deaf", True)
-        rc = 0
 
         @self.bot.event
         async def on_ready():
-            nonlocal rc
             if not self.running:
                 await self.bot.close()
                 return
-
-            push_log(self.name, f"Login as {self.bot.user}")
-            status_map[self.name] = {"status": "ONLINE", "detail": str(self.bot.user)}
-            g = self.bot.get_guild(guild_id)
-            ch = g.get_channel(channel_id) if g else None
-            if not ch:
-                push_log(self.name, "Error: Channel tidak ditemukan!")
-                status_map[self.name] = {"status": "ERROR", "detail": "Channel not found"}
-                await self.bot.close()
-                return
-
-            try:
-                await ch.connect(self_mute=mute, self_deaf=deaf)
-                await asyncio.sleep(1)
-                try:
-                    await g.change_voice_state(channel=ch, self_mute=mute, self_deaf=deaf)
-                except Exception:
-                    pass
-                m = " [Muted]" if mute else ""
-                d = " [Deafened]" if deaf else ""
-                push_log(self.name, f"Connected to #{ch.name} @ {g.name}{m}{d}")
-                status_map[self.name] = {"status": "VOICE", "detail": f"#{ch.name}"}
-                rc = 0
-            except Exception as e:
-                push_log(self.name, f"Connect error: {e}")
-                status_map[self.name] = {"status": "ERROR", "detail": str(e)[:25]}
-                await self.bot.close()
+            push_log(self.name, f"Login sukses sebagai {self.bot.user}")
+            status_map[self.name] = {"status": "ONLINE", "detail": "Siap join voice"}
 
         @self.bot.event
         async def on_voice_state_update(member, before, after):
-            nonlocal rc
-            # Jika bot sengaja dimatikan, jangan reconnect sama sekali
-            if not self.running:
+            # Hanya reconnect jika user memang sengaja dalam state in_voice
+            if not self.running or not self.in_voice or self.reconnecting:
                 return
 
             if member.id != self.bot.user.id or not (before.channel and not after.channel):
                 return
 
-            rc += 1
-            if rc > 10:
-                push_log(self.name, "Max reconnect reached. Stopped.")
-                status_map[self.name] = {"status": "ERROR", "detail": "Max reconnect"}
-                await self.bot.close()
-                return
+            self.reconnecting = True
+            push_log(self.name, "Terputus dari voice channel. Mencoba reconnect dalam 5 detik...")
+            status_map[self.name] = {"status": "RECONNECTING", "detail": "Waiting 5s"}
+            await asyncio.sleep(5)
 
-            delay = min(5 * rc, 60)
-            push_log(self.name, f"DC. Reconnecting in {delay}s...")
-            status_map[self.name] = {"status": "RECONNECTING", "detail": f"{delay}s"}
-            await asyncio.sleep(delay)
-
-            if not self.running:
-                return
-
-            g = self.bot.get_guild(guild_id)
-            ch = g.get_channel(channel_id) if g else None
-            if ch and self.running:
-                try:
-                    await ch.connect(self_mute=mute, self_deaf=deaf)
-                    await asyncio.sleep(1)
-                    await g.change_voice_state(channel=ch, self_mute=mute, self_deaf=deaf)
-                    push_log(self.name, "Reconnected!")
-                    status_map[self.name] = {"status": "VOICE", "detail": f"#{ch.name}"}
-                    rc = 0
-                except Exception as e:
-                    push_log(self.name, f"Reconnect failed: {e}")
+            if self.running and self.in_voice:
+                await self._join_voice_coro()
+            self.reconnecting = False
 
         try:
-            status_map[self.name] = {"status": "CONNECTING", "detail": "Starting..."}
-            push_log(self.name, "Connecting to gateway...")
+            status_map[self.name] = {"status": "CONNECTING", "detail": "Login ke Discord..."}
+            push_log(self.name, "Menghubungkan ke gateway Discord...")
             self.bot.run(token, log_handler=None)
         except Exception as e:
-            push_log(self.name, f"Fatal: {e}")
+            push_log(self.name, f"Login gagal: {e}")
             status_map[self.name] = {"status": "ERROR", "detail": str(e)[:25]}
         finally:
             self.running = False
+            self.in_voice = False
             status_map[self.name] = {"status": "OFFLINE", "detail": ""}
-            push_log(self.name, "Stopped.")
+            push_log(self.name, "Offline.")
+
+    def join_voice(self):
+        if not self.running or not self.bot or not self.bot.loop or not self.bot.loop.is_running():
+            push_log(self.name, "Bot belum login! Tunggu status ONLINE.")
+            return False
+        asyncio.run_coroutine_threadsafe(self._join_voice_coro(), self.bot.loop)
+        return True
+
+    async def _join_voice_coro(self):
+        guild_id = int(self.acc["guild_id"])
+        channel_id = int(self.acc["channel_id"])
+        mute = self.acc.get("self_mute", True)
+        deaf = self.acc.get("self_deaf", True)
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            push_log(self.name, f"ERROR: Server ID {guild_id} tidak ditemukan pada akun ini!")
+            status_map[self.name] = {"status": "ERROR", "detail": "Server ID invalid"}
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            push_log(self.name, f"ERROR: Voice Channel ID {channel_id} tidak ditemukan di {guild.name}!")
+            status_map[self.name] = {"status": "ERROR", "detail": "Channel ID invalid"}
+            return
+
+        status_map[self.name] = {"status": "CONNECTING", "detail": f"Join #{channel.name}..."}
+        push_log(self.name, f"Menghubungkan ke #{channel.name}...")
+
+        # Pastikan voice client lama ditutup jika ada
+        for vc_item in list(self.bot.voice_clients):
+            try:
+                await vc_item.disconnect(force=True)
+            except Exception:
+                pass
+
+        try:
+            vc_client = await channel.connect(self_mute=mute, self_deaf=deaf, timeout=15.0)
+            await asyncio.sleep(1.5)
+
+            # VERIFIKASI KONEKSI
+            # Tidak menggunakan guild.me karena member cache dinonaktifkan demi performa cepat
+            if vc_client.is_connected() and vc_client.channel and (vc_client.channel.id == channel.id):
+                try:
+                    await guild.change_voice_state(channel=channel, self_mute=mute, self_deaf=deaf)
+                except Exception:
+                    pass
+                self.in_voice = True
+                m = " [Muted]" if mute else ""
+                d = " [Deafened]" if deaf else ""
+                push_log(self.name, f"BERHASIL masuk voice #{channel.name} @ {guild.name}{m}{d}!")
+                status_map[self.name] = {"status": "VOICE", "detail": f"#{channel.name}"}
+            else:
+                push_log(self.name, f"Verifikasi gagal: Voice client tidak terhubung ke #{channel.name}.")
+                status_map[self.name] = {"status": "ONLINE", "detail": "Gagal masuk voice"}
+        except Exception as e:
+            push_log(self.name, f"Gagal masuk voice: {e}")
+            status_map[self.name] = {"status": "ONLINE", "detail": "Join voice error"}
+
+    def leave_voice(self):
+        if not self.bot or not self.bot.loop or not self.bot.loop.is_running():
+            return
+        self.in_voice = False
+        push_log(self.name, "Keluar dari voice channel...")
+        status_map[self.name] = {"status": "ONLINE", "detail": "Standby"}
+
+        async def _leave():
+            for vc_item in list(self.bot.voice_clients):
+                try:
+                    await vc_item.disconnect(force=True)
+                except Exception:
+                    pass
+            try:
+                for guild in list(self.bot.guilds):
+                    await guild.change_voice_state(channel=None)
+            except Exception:
+                pass
+
+        asyncio.run_coroutine_threadsafe(_leave(), self.bot.loop)
 
     def stop(self):
         if not self.running:
             return
         self.running = False
-        push_log(self.name, "Stopping and disconnecting...")
+        self.in_voice = False
+        push_log(self.name, "Mematikan bot total...")
         status_map[self.name] = {"status": "OFFLINE", "detail": ""}
 
-        if self.bot and self.loop and self.loop.is_running():
+        if self.bot and self.bot.loop and self.bot.loop.is_running():
             async def _close():
-                # 1. Keluar dari voice channel secara resmi
-                for vc in list(self.bot.voice_clients):
+                for vc_item in list(self.bot.voice_clients):
                     try:
-                        await vc.disconnect(force=True)
+                        await vc_item.disconnect(force=True)
                     except Exception:
                         pass
-                # 2. Update status gateway voice state ke None
                 try:
                     for guild in list(self.bot.guilds):
                         await guild.change_voice_state(channel=None)
                 except Exception:
                     pass
-                # 3. Putus session bot Discord total
                 await self.bot.close()
 
-            asyncio.run_coroutine_threadsafe(_close(), self.loop)
+            asyncio.run_coroutine_threadsafe(_close(), self.bot.loop)
 
 
 # ============================================
@@ -306,12 +335,12 @@ HTML = """<!DOCTYPE html>
     <div class="header">
       <div class="title">
         <h1>Discord Voice Stay Manager</h1>
-        <p>Stay 24/7 in Discord Voice Channel</p>
+        <p>Login standby otomatis. Klik tombol hijau untuk Join Voice.</p>
       </div>
       <div class="actions">
         <button class="btn-primary" onclick="toggleForm()">+ Tambah Akun</button>
-        <button class="btn-success" onclick="fetch('/api/start_all',{method:'POST'}).then(load)">Start All</button>
-        <button class="btn-danger" onclick="fetch('/api/stop_all',{method:'POST'}).then(load)">Stop All</button>
+        <button class="btn-success" onclick="fetch('/api/join_all',{method:'POST'}).then(load)">Join All</button>
+        <button class="btn-danger" onclick="fetch('/api/leave_all',{method:'POST'}).then(load)">Leave All</button>
         <button class="btn-dark" style="color:#ff7b72; border:1px solid var(--danger);" onclick="shutdown()">Shutdown</button>
       </div>
     </div>
@@ -359,7 +388,17 @@ HTML = """<!DOCTYPE html>
         }
         list.innerHTML = data.accounts.map(a => {
           const s = data.statuses[a.name] || {status: 'OFFLINE', detail: ''};
-          const isRun = ['VOICE', 'ONLINE', 'CONNECTING', 'RECONNECTING'].includes(s.status);
+          let actionBtn = '';
+          if (s.status === 'VOICE') {
+            actionBtn = `<button class="btn-danger" style="padding:5px 10px; font-size:12px;" onclick="fetch('/api/voice/leave',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'${escape(a.name)}'})}).then(load)">Leave VC</button>`;
+          } else if (s.status === 'ONLINE') {
+            actionBtn = `<button class="btn-success" style="padding:5px 10px; font-size:12px;" onclick="fetch('/api/voice/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'${escape(a.name)}'})}).then(load)">Join Voice</button>`;
+          } else if (s.status === 'OFFLINE' || s.status === 'ERROR') {
+            actionBtn = `<button class="btn-primary" style="padding:5px 10px; font-size:12px;" onclick="fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'${escape(a.name)}'})}).then(load)">Login</button>`;
+          } else {
+            actionBtn = `<button class="btn-dark" style="padding:5px 10px; font-size:12px;" disabled>...</button>`;
+          }
+
           return `
             <div class="item">
               <div>
@@ -368,10 +407,7 @@ HTML = """<!DOCTYPE html>
                 <small style="color:#8b949e; margin-left:6px;">${escape(s.detail)}</small>
               </div>
               <div style="display:flex; gap:6px;">
-                ${isRun 
-                  ? `<button class="btn-danger" style="padding:5px 10px; font-size:12px;" onclick="fetch('/api/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'${escape(a.name)}'})}).then(load)">Stop</button>`
-                  : `<button class="btn-success" style="padding:5px 10px; font-size:12px;" onclick="fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'${escape(a.name)}'})}).then(load)">Start</button>`
-                }
+                ${actionBtn}
                 <button class="btn-dark" style="padding:5px 8px; font-size:12px; color:#ff7b72;" onclick="del('${escape(a.name)}')">&times;</button>
               </div>
             </div>
@@ -435,6 +471,38 @@ def index():
 @app.route("/api/state")
 def api_state():
     return jsonify({"accounts": load_accounts(), "statuses": status_map, "logs": log_buffer})
+
+
+@app.route("/api/voice/join", methods=["POST"])
+def api_voice_join():
+    name = request.json.get("name")
+    if name in active_runners:
+        active_runners[name].join_voice()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/voice/leave", methods=["POST"])
+def api_voice_leave():
+    name = request.json.get("name")
+    if name in active_runners:
+        active_runners[name].leave_voice()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/join_all", methods=["POST"])
+def api_join_all():
+    for runner in active_runners.values():
+        if runner.running:
+            runner.join_voice()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/leave_all", methods=["POST"])
+def api_leave_all():
+    for runner in active_runners.values():
+        if runner.running:
+            runner.leave_voice()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/start", methods=["POST"])
