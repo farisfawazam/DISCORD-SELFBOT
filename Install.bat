@@ -2,4 +2,5 @@
 set PYTHONIOENCODING=utf-8
 cd /d "%~dp0"
 
-python desktop\app.py
+python install.py
+pause

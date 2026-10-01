@@ -1,65 +1,202 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ========================================================
-# Setup 1x Discord Voice Stay (Self-Healing Pip & Auto-Extract)
+# Setup 1x Discord Voice Stay (Curl-CFFI Full Protocol Mock)
 # ========================================================
 set -e
 
 echo "=========================================="
-echo "  [1/4] Memeriksa & Memperbaiki Pip Termux..."
+echo "  [1/3] Menyiapkan Python Dasar..."
 echo "=========================================="
-# Jika pip rusak (akibat transisi python 3.13 ke 3.14), bersihkan dan pasang ulang otomatis
-if ! python3 -m pip --version >/dev/null 2>&1; then
-    echo "[!] Mendeteksi pip corrupt. Memperbaiki secara otomatis..."
-    rm -rf /data/data/com.termux/files/usr/lib/python*/site-packages/pip* 2>/dev/null || true
-    rm -rf /data/data/com.termux/files/usr/lib/python*/site-packages/setuptools* 2>/dev/null || true
-    rm -rf /data/data/com.termux/files/usr/lib/python*/site-packages/wheel* 2>/dev/null || true
-    pkg update -y
-    pkg install --reinstall -y python python-pip
-fi
+pkg update -y
+pkg install -y python git
 
 echo "=========================================="
-echo "  [2/4] Menginstall Package Dasar..."
-echo "=========================================="
-pkg install -y git clang make libffi
-
-echo "=========================================="
-echo "  [3/4] Menginstall Library Python..."
-echo "=========================================="
-python3 -m pip install flask python-dotenv discord.py-self==2.1.0
-
-echo "=========================================="
-echo "  [4/4] Memasang Pre-built Binary Davey (DAVE Protocol)..."
+echo "  [2/3] Memasang Library Python & Davey..."
 echo "=========================================="
 SITE_DIR=$(python3 -c "import site; print(site.getsitepackages()[0])")
 
 python3 -c "
-import urllib.request, zipfile, io, sys
+import urllib.request, json, zipfile, io, sys, sysconfig, shutil, os
 
-# Mendeteksi versi minor python di Termux (misal 3.14 -> 314, 3.13 -> 313)
-v = f'{sys.version_info.major}{sys.version_info.minor}'
-urls = {
-    '314': 'https://files.pythonhosted.org/packages/21/de/91f95b4b673163fe691f21cdc3b50577fb8bda687e5f7b53ab237f94a860/davey-0.1.6-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl',
-    '313': 'https://files.pythonhosted.org/packages/c0/50/fd017a3f89252597e0c85a4552fe732add13c167f07059886f8f9add218b/davey-0.1.6-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl',
-    '312': 'https://files.pythonhosted.org/packages/72/c0/51b69f42e2b1a873ed279af0f581eab91744919dc41c006eb20ce603e567/davey-0.1.6-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl'
-}
+paths = [sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]
+for p in sys.path:
+    if 'site-packages' in p and p not in paths:
+        paths.append(p)
 
-url = urls.get(v, urls['314'])
-print(f'Mengunduh prebuilt davey binary untuk Python {v} aarch64...')
+headers = {'User-Agent': 'pip/24.0 (Termux AutoInstaller)'}
+
+for p in paths:
+    for folder in ['curl_cffi', 'audioop', 'cffi']:
+        target_dir = os.path.join(p, folder)
+        if os.path.exists(target_dir):
+            if os.path.isdir(target_dir):
+                shutil.rmtree(target_dir, ignore_errors=True)
+            else:
+                os.remove(target_dir)
+
+def get_wheel_url(pkg_name, preferred_tag=None):
+    api_url = f'https://pypi.org/pypi/{pkg_name}/json'
+    req = urllib.request.Request(api_url, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode('utf-8'))
+    
+    urls = data.get('urls', [])
+    if preferred_tag:
+        for u in urls:
+            fn = u.get('filename', '')
+            if fn.endswith('.whl') and preferred_tag in fn:
+                return u.get('url'), fn
+    for u in urls:
+        fn = u.get('filename', '')
+        if fn.endswith('.whl') and ('py3-none-any' in fn or 'py2.py3-none-any' in fn):
+            return u.get('url'), fn
+    for u in urls:
+        fn = u.get('filename', '')
+        if fn.endswith('.whl'):
+            return u.get('url'), fn
+    return None, None
+
+packages = [
+    'blinker', 'click', 'itsdangerous', 'werkzeug', 'jinja2', 'markupsafe', 'flask', 'python-dotenv',
+    'typing_extensions', 'attrs', 'idna', 'multidict', 'propcache', 'yarl',
+    'frozenlist', 'aiosignal', 'aiohappyeyeballs', 'async-timeout', 'aiohttp',
+    'certifi', 'protobuf', 'tzlocal', 'tzdata', 'discord_protos',
+    'discord.py-self'
+]
+
+print('Mengekstrak paket dasar...')
+for pkg in packages:
+    try:
+        url, fn = get_wheel_url(pkg)
+        if not url:
+            continue
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read()
+        z = zipfile.ZipFile(io.BytesIO(content))
+        for p in paths:
+            z.extractall(p)
+        print(f'  [OK] {pkg}')
+    except Exception as e:
+        print(f'  [FAIL] {pkg}: {e}')
+
+print('\nMemasang binary davey...')
 try:
-    data = urllib.request.urlopen(url).read()
-    print(f'Mengekstrak {len(data)} bytes ke $SITE_DIR...')
-    z = zipfile.ZipFile(io.BytesIO(data))
-    z.extractall('$SITE_DIR')
-    print('[OK] Binary davey berhasil terpasang!')
+    v = f'{sys.version_info.major}{sys.version_info.minor}'
+    url, fn = get_wheel_url('davey', preferred_tag=f'cp{v}')
+    if not url:
+        url, fn = get_wheel_url('davey', preferred_tag='aarch64')
+    if url:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            content = resp.read()
+        z = zipfile.ZipFile(io.BytesIO(content))
+        for p in paths:
+            z.extractall(p)
+        print(f'  [OK] davey ({fn})')
 except Exception as e:
-    print('[WARN] Gagal auto-extract:', e)
+    print(f'  [FAIL] davey: {e}')
+
+# Pasang curl_cffi mock yang lengkap dengan atext & ajson & RequestsError
+init_code = '''class CurlError(Exception): pass
+class WebSocketError(Exception): pass
+class CurlMime:
+    def addpart(self, *a, **k): pass
+
+from . import requests
+from . import const
+
+__all__ = ['CurlError', 'WebSocketError', 'CurlMime', 'requests', 'const']
+'''
+
+requests_code = '''import aiohttp
+import asyncio
+import json
+
+class RequestsError(Exception): pass
+class CurlError(Exception): pass
+
+class impersonate:
+    DEFAULT_CHROME = 'chrome'
+
+class session:
+    class HttpMethod: pass
+
+class Response:
+    def __init__(self, status, headers, content):
+        self.status_code = status
+        self.status = status
+        self.headers = headers
+        self.content = content
+        self.text = content.decode('utf-8', errors='replace')
+    def json(self):
+        return json.loads(self.text)
+    async def atext(self):
+        return self.text
+    async def ajson(self):
+        return self.json()
+
+class AsyncSession:
+    def __init__(self, *args, **kwargs):
+        self._session = None
+
+    async def _get_session(self):
+        if not self._session or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def request(self, method, url, headers=None, data=None, json=None, params=None, **kwargs):
+        sess = await self._get_session()
+        kwargs.pop('impersonate', None)
+        kwargs.pop('timeout', None)
+        async with sess.request(method, url, headers=headers, data=data, json=json, params=params) as resp:
+            content = await resp.read()
+            return Response(resp.status, resp.headers, content)
+
+    async def ws_connect(self, url, **kwargs):
+        sess = await self._get_session()
+        kwargs.pop('impersonate', None)
+        headers = kwargs.pop('headers', {})
+        return await sess.ws_connect(url, headers=headers)
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+class Session(AsyncSession): pass
+class AsyncWebSocket: pass
+'''
+
+const_code = '''class CurlWsFlag:
+    TEXT = 1
+    BINARY = 2
+    CLOSE = 8
+'''
+
+for p in paths:
+    c_pkg = os.path.join(p, 'curl_cffi')
+    os.makedirs(c_pkg, exist_ok=True)
+    with open(os.path.join(c_pkg, '__init__.py'), 'w', encoding='utf-8') as f:
+        f.write(init_code)
+    with open(os.path.join(c_pkg, 'requests.py'), 'w', encoding='utf-8') as f:
+        f.write(requests_code)
+    with open(os.path.join(c_pkg, 'const.py'), 'w', encoding='utf-8') as f:
+        f.write(const_code)
+
+    with open(os.path.join(p, 'audioop.py'), 'w', encoding='utf-8') as f:
+        f.write('error = Exception\\ndef getsample(*a,**k): return 0\\n')
 "
 
-python3 -c "import davey; print('  [SUKSES] Davey Protocol Version:', davey.DAVE_PROTOCOL_VERSION)" 2>/dev/null || echo "[!] Lanjut menjalankan bot..."
+echo "=========================================="
+echo "  [3/3] Memverifikasi Status Akhir..."
+echo "=========================================="
+python3 -c "import flask; print('  [OK] Flask Ready!')"
+python3 -c "import discord; print('  [OK] Discord.py-self Ready!')"
+python3 -c "import davey; print('  [OK] Davey Protocol Versi:', davey.DAVE_PROTOCOL_VERSION)" 2>/dev/null || true
 
 echo ""
 echo "=========================================="
-echo "  SETUP SELESAI!"
-echo "  Tinggal ketik:"
+echo "  SETUP SELESAI 100%!"
+echo "  Jalankan sekarang:"
 echo "  python run.py"
 echo "=========================================="

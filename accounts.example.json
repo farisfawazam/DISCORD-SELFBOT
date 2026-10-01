@@ -5,6 +5,8 @@
     "guild_id": "SERVER_ID",
     "channel_id": "VOICE_CHANNEL_ID",
     "self_mute": true,
-    "self_deaf": true
+    "self_deaf": true,
+    "presence": "online",
+    "enabled": true
   }
 ]

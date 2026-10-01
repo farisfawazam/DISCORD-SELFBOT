@@ -1,6 +1,6 @@
 #!/bin/bash
 # ================================================
-# Discord Selfbot - Oracle Cloud VPS Setup Script
+# Discord Selfbot - Linux / VPS Setup Script
 # Jalankan sekali setelah SSH ke VPS
 # ================================================
 set -e
@@ -21,7 +21,7 @@ source venv/bin/activate
 
 echo "=== [4/5] Install dependencies ==="
 pip install --upgrade pip
-pip install discord.py-self PyNaCl davey python-dotenv
+pip install -r requirements.txt
 
 echo "=== [5/5] Setup systemd service ==="
 sudo tee /etc/systemd/system/discord-selfbot.service > /dev/null <<EOF
@@ -34,7 +34,7 @@ Wants=network-online.target
 Type=simple
 User=$USER
 WorkingDirectory=$HOME/discord-selfbot
-ExecStart=$HOME/discord-selfbot/venv/bin/python stay_vc.py
+ExecStart=$HOME/discord-selfbot/venv/bin/python run.py --run
 Restart=always
 RestartSec=10
 StandardOutput=append:$HOME/discord-selfbot/selfbot.log
@@ -49,25 +49,23 @@ sudo systemctl enable discord-selfbot
 
 echo ""
 echo "============================================"
-echo "  Setup selesai!"
+echo "  Setup VPS Selesai!"
 echo "============================================"
 echo ""
-echo "  Langkah selanjutnya:"
-echo "  1. Edit file .env:"
-echo "     nano ~/discord-selfbot/.env"
+echo "  Langkah konfigurasi & menjalankan:"
+echo "  1. Jalankan CLI terminal untuk setup akun (input token, guild, channel):"
+echo "     source venv/bin/activate"
+echo "     python run.py"
 echo ""
-echo "  2. Upload file stay_vc.py dan config.py"
-echo "     (atau copy paste isinya)"
-echo ""
-echo "  3. Start service:"
+echo "  2. Setelah akun ditambahkan di menu, jalankan service background:"
 echo "     sudo systemctl start discord-selfbot"
 echo ""
-echo "  4. Cek status:"
+echo "  3. Cek status service:"
 echo "     sudo systemctl status discord-selfbot"
 echo ""
-echo "  5. Lihat log:"
+echo "  4. Lihat log realtime:"
 echo "     tail -f ~/discord-selfbot/selfbot.log"
 echo ""
-echo "  Stop service:"
+echo "  Hentikan service:"
 echo "     sudo systemctl stop discord-selfbot"
 echo "============================================"
