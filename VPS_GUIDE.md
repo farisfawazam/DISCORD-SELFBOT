@@ -88,7 +88,40 @@ chmod +x bot.sh
 
 ---
 
-## 5. Menjalankan Manual (Alternatif tanpa `./bot.sh`)
+## 5. Alur Saat Login SSH VPS di Hari Berikutnya
+
+Saat membuka terminal SSH lagi, bot di background biasanya masih tetap aktif. Cukup jalankan:
+
+```bash
+cd ~/discord-selfbot
+./bot.sh status
+```
+
+- Jika `[STATUS] AKTIF`: bot masih standby 24/7 di voice channel. Untuk melihat aktivitas realtime, jalankan `./bot.sh log` (`Ctrl + C` untuk keluar).
+- Jika `[STATUS] MATI` (misalnya VPS baru reboot): nyalakan kembali dengan `./bot.sh start`.
+
+---
+
+## 6. Aturan Penting: Buka Menu Saat Bot Sedang Running
+
+> ⚠️ **PENTING**: Jangan memilih `1. Start Voice Stay` di menu interaktif saat bot sedang berjalan di background via `./bot.sh start`. Hal ini menyebabkan konflik *double session* pada token yang sama dan memicu auto-disconnect atau spam reconnect di Discord.
+
+Jika ingin mengedit akun, ganti channel, atau menambah token, gunakan alur aman:
+
+```bash
+# 1. Hentikan bot background sementara
+./bot.sh stop
+
+# 2. Buka menu konfigurasi untuk edit akun/channel
+./bot.sh menu
+
+# 3. Nyalakan kembali ke background setelah selesai
+./bot.sh start
+```
+
+---
+
+## 7. Menjalankan Manual (Alternatif tanpa `./bot.sh`)
 
 Agar bot tidak mati saat jendela terminal SSH di-close:
 
@@ -111,19 +144,21 @@ Selesai. Anda aman untuk menutup (*close*) jendela terminal SSH kapan saja. Bot 
 
 ---
 
-## 5. Perintah Manajemen Harian
+## 8. Perintah Manajemen Harian
 
 | Kebutuhan | Perintah di Terminal VPS |
 |---|---|
-| Buka kembali tampilan bot | `screen -r bot` |
-| Lepas layar lagi (jangan matikan) | Tekan `Ctrl + A` lalu `D` |
-| Hentikan bot total | `killall python3` |
+| Jalankan bot background | `./bot.sh start` |
+| Cek bot aktif / mati | `./bot.sh status` |
+| Pantau log realtime | `./bot.sh log` |
+| Hentikan bot | `./bot.sh stop` |
+| Restart bot | `./bot.sh restart` |
+| Buka menu akun aman | `./bot.sh stop && ./bot.sh menu` |
 | Update kode bot ke versi terbaru | `git pull origin main` |
-| Cek log bot jika via nohup | `tail -f ~/discord-selfbot/selfbot.log` |
 
 ---
 
-## 6. Troubleshooting
+## 9. Troubleshooting
 
 - **Error `No module named pip`**:
   Jalankan `apt update && apt install -y python3-pip`, lalu ulangi `python3 install.py`.
