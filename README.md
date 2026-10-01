@@ -1,5 +1,7 @@
 # Discord Voice Stay Manager (Terminal & VPS CLI)
 
+> 📖 **Panduan VPS Lengkap**: Baca [VPS_GUIDE.md](VPS_GUIDE.md) untuk langkah demi langkah terminal VPS dari awal sampai jalan 24/7 background.
+
 Selfbot Discord multi-akun berkinerja tinggi yang dirancang khusus untuk standby di Voice Channel 24/7 tanpa GUI browser, hemat resource, bebas deadcode, dan dioptimasi penuh untuk lingkungan **Terminal / SSH VPS (Linux/Ubuntu/Debian)** maupun **Android Termux**.
 
 ---
