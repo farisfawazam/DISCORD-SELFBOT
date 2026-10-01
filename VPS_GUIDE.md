@@ -59,7 +59,36 @@ Di dalam menu terminal:
 
 ---
 
-## 4. Jalankan Bot 24/7 di Background (Screen)
+## 4. Shortcut Cepat Menjalankan Bot di VPS (1 File `bot.sh`)
+
+Gunakan shortcut `./bot.sh` untuk kontrol praktis:
+
+```bash
+# Beri izin eksekusi sekali saja
+chmod +x bot.sh
+
+# 1. Jalankan di background 24/7 (aman close terminal SSH):
+./bot.sh start
+
+# 2. Cek status bot (apakah masih aktif/mati):
+./bot.sh status
+
+# 3. Pantau log realtime (Ctrl+C untuk keluar, bot tidak akan mati):
+./bot.sh log
+
+# 4. Hentikan bot:
+./bot.sh stop
+
+# 5. Restart bot:
+./bot.sh restart
+
+# 6. Buka menu konfigurasi akun:
+./bot.sh menu
+```
+
+---
+
+## 5. Menjalankan Manual (Alternatif tanpa `./bot.sh`)
 
 Agar bot tidak mati saat jendela terminal SSH di-close:
 
