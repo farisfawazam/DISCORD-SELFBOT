@@ -65,10 +65,24 @@ python run.py --verify
 python run.py --list
 ```
 
-### 4. Background Service di VPS (Systemd)
+### 4. Background Service di VPS (Gunakan `bot.sh`)
+
+Untuk VPS Linux, gunakan script kontrol all-in-one `bot.sh`:
 
 ```bash
-bash scripts/vps-setup.sh
+chmod +x bot.sh
+
+# Jalankan 24/7 di background (aman tutup terminal SSH):
+./bot.sh start
+
+# Cek status aktif/mati:
+./bot.sh status
+
+# Lihat log realtime:
+./bot.sh log
+
+# Hentikan bot:
+./bot.sh stop
 ```
 
 ---
@@ -78,14 +92,17 @@ bash scripts/vps-setup.sh
 ```
 discord-selfbot/
 ├── run.py                 # Core Engine & Terminal UI Manager
-├── accounts.json          # Database akun lokal
+├── accounts.json          # Database akun lokal (terlindungi .gitignore)
 ├── accounts.example.json  # Format contoh JSON
 ├── settings.json          # Konfigurasi global engine
 ├── requirements.txt       # Dependensi minimal (discord.py-self, aiohttp, rich, audioop-lts)
 ├── install.py             # Single file installer dependensi cross-platform
+├── bot.sh                 # Shortcut kontrol background VPS (start/stop/status/log/menu)
 ├── Install.bat            # Shortcut installer Windows
-├── Start.bat              # Shortcut Windows
+├── Start.bat              # Shortcut runner Windows
+├── Stop-All.bat           # Shortcut kill bot Windows
 ├── test_selfbot.py        # Runnable self-check test
 ├── ARCHITECTURE.md        # Dokumentasi teknis arsitektur
+├── VPS_GUIDE.md           # Panduan lengkap setup VPS terminal dari awal
 └── README.md
 ```
